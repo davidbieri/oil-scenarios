@@ -64,20 +64,19 @@ The VIX measures equity implied volatility; the OVX (CBOE Crude Oil VIX) measure
 **Futures curve calculation:**
 The backwardation/contango parameter is derived from the annualised log-return spread between the front-month contract (M1 = `CL=F`) and the 6-month-out contract:
 
-```
-annualised_slope = ln(M1_price / M6_price) / (5/12)  × 100  %/yr
+```math
+\text{slope} = \frac{\ln(P_{M1} / P_{M6})}{5/12} \times 100 \quad \text{(\%/yr)}
 ```
 
 Positive = backwardation (near > far, typical in tight markets). Negative = contango (near < far, typical in oversupply). The app attempts M6 first and falls back to M3 if the M6 contract is unavailable or illiquid. The fetched value is displayed in the status panel and applied as a rounded integer to the slider.
 
 **OVX → Heston variance mapping:**
 
-```
-V₀    = (OVX / 100)²          ← instantaneous variance from current OVX
-θᵥ    = (V₀ + 0.1225) / 2    ← blend with historical mean (35%² = 0.1225)
+```math
+V_0 = \left(\frac{\text{OVX}}{100}\right)^2, \qquad \theta_v = \frac{V_0 + 0.1225}{2}
 ```
 
-The long-run variance θᵥ blends the current OVX reading with the approximate historical mean OVX of ~35%, producing a mean-reverting target that accounts for current conditions without anchoring entirely to a potentially elevated or depressed spot reading.
+The long-run variance $\theta_v$ blends the current OVX reading with the approximate historical mean OVX of ~35% (where $0.35^2 = 0.1225$).
 
 **Button states:** amber `↻ Live Price` → spinning `Fetching…` → green `✓ Updated` (with WTI, OVX, VIX, and curve slope displayed) or red `✕ Failed` (auto-resets after 4 s).
 
@@ -285,8 +284,8 @@ All WTI values in USD/bbl; gasoline values in USD/gal. Month 0 = current spot.
 
 **800 independent Monte Carlo paths** (400 in comparison mode) discretised at **16 sub-steps per month** via Euler-Maruyama:
 
-```
-dt = 1 / (12 × 16) ≈ 0.0052 years
+```math
+dt = \frac{1}{12 \times 16} \approx 0.0052 \text{ years}
 ```
 
 Random number generation: Box-Muller transform (normal), Knuth algorithm (Poisson), Marsaglia-Tsang squeeze method (Gamma). The simulation re-runs automatically with a 300 ms debounce on parameter changes.
@@ -297,90 +296,91 @@ Random number generation: Box-Muller transform (normal), Knuth algorithm (Poisso
 
 **1. Geometric Brownian Motion** — Black & Scholes (1973)
 
-```
-S(t+dt) = S(t) · exp[(μ - ½σ²)·dt + σ·√dt·Z]    Z ~ N(0,1)
+```math
+S_{t+dt} = S_t \exp\!\left[\left(\mu - \tfrac{1}{2}\sigma^2\right)dt + \sigma\sqrt{dt}\,Z_t\right], \quad Z_t \sim \mathcal{N}(0,1)
 ```
 
-Log-normal terminal distribution. I.i.d. Gaussian returns. The Itô correction −½σ²dt ensures E[S_T] = S₀·exp(μT).
+Log-normal terminal distribution. I.i.d. Gaussian returns. The Itô correction $-\tfrac{1}{2}\sigma^2 dt$ ensures $\mathbb{E}[S_T] = S_0 e^{\mu T}$.
 
 **2. Schwartz Mean-Reversion (Log-OU)** — Schwartz (1997)
 
+```math
+\ln S_{t+dt} = \ln S_t + \kappa(\ln\theta - \ln S_t)\,dt + \sigma\sqrt{dt}\,Z_t
 ```
-ln S(t+dt) = ln S(t) + κ·(ln θ - ln S(t))·dt + σ·√dt·Z
-```
+
+Long-run variance bounded at $\sigma^2 / (2\kappa)$. Half-life $= \ln 2 / \kappa$.
 
 **3. Merton Jump-Diffusion** — Merton (1976)
 
+```math
+S_{t+dt} = S_t \exp\!\left[\left(\mu - \tfrac{1}{2}\sigma^2 - \lambda\bar{k}\right)dt + \sigma\sqrt{dt}\,Z_t + \sum_{i=1}^{N_{dt}} Y_i\right]
 ```
-S(t+dt) = S(t) · exp[(μ - ½σ² - λk̄)·dt + σ·√dt·Z + Σ Yᵢ]
 
-  N(dt) ~ Poisson(λ·dt)
-  Yᵢ    ~ N(μ_J, σ_J²)
-  k̄     = exp(μ_J + ½σ_J²) - 1    (Merton martingale correction)
-```
+where $N_{dt} \sim \text{Poisson}(\lambda\,dt)$, each $Y_i \sim \mathcal{N}(\mu_J, \sigma_J^2)$, and the Merton martingale correction is $\bar{k} = e^{\mu_J + \sigma_J^2/2} - 1$.
 
 **4. Hamilton Regime-Switching** — Hamilton (1989)
 
-Three-state HMM. Transition matrix rows sum to 1. Regimes: Bull (μ+22%, σ×0.62), Bear (μ−10%, σ×1.28), Crisis (μ−52%, σ×2.90).
+Three-state HMM. Transition matrix rows sum to 1. Regimes: Bull ($\mu$+22%, $\sigma{\times}0.62$), Bear ($\mu$−10%, $\sigma{\times}1.28$), Crisis ($\mu$−52%, $\sigma{\times}2.90$).
 
-```
-P = | 0.934  0.061  0.005 |   (from Bull)
-    | 0.055  0.895  0.050 |   (from Bear)
-    | 0.048  0.168  0.784 |   (from Crisis)
+```math
+P = \begin{pmatrix} 0.934 & 0.061 & 0.005 \\ 0.055 & 0.895 & 0.050 \\ 0.048 & 0.168 & 0.784 \end{pmatrix} \quad \text{rows: Bull, Bear, Crisis}
 ```
 
 **5. Futures-Implied Forward Curve** — Brennan & Schwartz (1985)
 
-```
-S(t+dt) = S(t) · exp[(μ + ρ - ½σ²)·dt + σ·√dt·Z]
+```math
+S_{t+dt} = S_t \exp\!\left[\left(\mu + \rho - \tfrac{1}{2}\sigma^2\right)dt + \sigma\sqrt{dt}\,Z_t\right]
 ```
 
-where ρ is the convenience yield (backwardation = positive; contango = negative).
+where $\rho$ is the convenience yield: positive = backwardation, negative = contango.
 
 **6. Heston Stochastic Volatility** — Heston (1993)
 
+```math
+dS_t = \mu S_t\,dt + \sqrt{v_t}\,S_t\,dW_t^S
 ```
-dS  =  μ·S·dt  +  √v·S·dWˢ
-dv  =  κᵥ·(θᵥ - v)·dt  +  σᵥ·√v·dWᵛ
-dWˢ·dWᵛ = ρ·dt
+```math
+dv_t = \kappa_v(\theta_v - v_t)\,dt + \sigma_v\sqrt{v_t}\,dW_t^v, \quad dW_t^S\,dW_t^v = \rho\,dt
 ```
 
-Full-truncation Euler scheme (Lord et al. 2010). κᵥ = 2.0 fixed.
+Full-truncation Euler scheme (Lord et al. 2010). $\kappa_v = 2.0$ fixed internally.
 
 **7. Schwartz-Smith Two-Factor** — Schwartz & Smith (2000)
 
+```math
+\ln S_t = \chi_t + \xi_t
 ```
-ln S(t) = χ(t) + ξ(t)
-
-dχ = -κ_χ·χ·dt  +  σ_χ·dW¹          (short-run, mean-reverting)
-dξ = (μ - ½σ_ξ²)·dt  +  σ_ξ·dW²    (long-run, random walk)
-dW¹·dW² = ρ·dt
-
-Initial conditions:  χ₀ = 0,  ξ₀ = ln S₀
+```math
+d\chi_t = -\kappa_\chi\,\chi_t\,dt + \sigma_\chi\,dW_t^1 \qquad \text{(short-run, stationary)}
+```
+```math
+d\xi_t = \left(\mu - \tfrac{1}{2}\sigma_\xi^2\right)dt + \sigma_\xi\,dW_t^2 \qquad \text{(long-run, non-stationary)}
+```
+```math
+dW_t^1\,dW_t^2 = \rho\,dt, \qquad \chi_0 = 0,\quad \xi_0 = \ln S_0
 ```
 
 **8. Variance-Gamma** — Madan, Carr & Chang (1998)
 
+```math
+X_{VG}(dt) = \theta_{VG}\cdot G + \sigma\sqrt{G}\cdot Z, \qquad G \sim \Gamma\!\left(\frac{dt}{\nu},\,\nu\right)
 ```
-X_VG(dt) = θ_VG·G + σ·√G·Z          G ~ Gamma(dt/ν, ν)
-
-S(t+dt) = S(t) · exp[(μ + ω)·dt + X_VG(dt)]
-
-ω = (1/ν) · ln(1 - θ_VG·ν - ½σ²·ν)   (martingale correction)
+```math
+S_{t+dt} = S_t\exp\!\left[(\mu + \omega)\,dt + X_{VG}(dt)\right], \qquad \omega = \frac{1}{\nu}\ln\!\left(1 - \theta_{VG}\nu - \tfrac{1}{2}\sigma^2\nu\right)
 ```
 
-Note: ω is positive for typical oil parameters (negative θ_VG, small ν), ensuring E[S_T] = S₀·exp(μT).
+$\omega$ is positive for typical oil parameters (negative $\theta_{VG}$, small $\nu$), ensuring $\mathbb{E}[S_T] = S_0 e^{\mu T}$.
 
 ---
 
 ### Macro Factor Module
 
+```math
+\mu_{\text{eff}} = \mu_0 + \Delta\mu_{\text{Fed}} + \Delta\mu_{\text{DXY}} + \Delta\mu_{\text{real}} + \Delta\mu_{\pi} + \Delta\mu_{\text{SPX}} + \Delta\mu_{\text{EIA}} + \Delta\mu_{\text{Geo}} + \Delta\mu_{\text{OPEC}} + \Delta\mu_{\text{VIX}}
 ```
-μ_eff = μ₀ + Δμ_Fed + Δμ_DXY + Δμ_real + Δμ_π + Δμ_SPX
-             + Δμ_EIA + Δμ_Geo + Δμ_OPEC + Δμ_VIX
 
-σ_eff = σ₀ · (1 + G/10 · 0.55)          ← geo-risk scaling
-             · (1 + max(V-20,0)/10 · 0.08) ← VIX scaling
+```math
+\sigma_{\text{eff}} = \sigma_0 \cdot \left(1 + \frac{G}{10}\cdot 0.55\right) \cdot \left(1 + \frac{\max(V-20,\,0)}{10}\cdot 0.08\right)
 ```
 
 | Term | Formula | Source |
@@ -401,28 +401,28 @@ Note: ω is positive for typical oil parameters (negative θ_VG, small ν), ensu
 
 **Channel 1 — Volatility scaling:** OVX tracks VIX with correlation ≈ 0.72. Above VIX = 20:
 
-```
-σ_eff = σ_eff × (1 + max(V-20, 0)/10 × 0.08)
+```math
+\sigma_{\text{eff}} \leftarrow \sigma_{\text{eff}} \times \left(1 + \frac{\max(V-20,\,0)}{10} \times 0.08\right)
 ```
 
 **Channel 2 — Jump intensity amplification:** Power-law, calibrated to Todorov (2010):
 
-```
-λ_eff = λ₀ × (V/20)^1.4
+```math
+\lambda_{\text{eff}} = \lambda_0 \times \left(\frac{V}{20}\right)^{1.4}
 ```
 
 **Channel 3 — Drift suppression:** Demand-destruction fear above VIX = 20:
 
-```
-Δμ_VIX = -max(V-20, 0) × 0.018  per year
+```math
+\Delta\mu_{\text{VIX}} = -\max(V - 20,\;0) \times 0.018 \text{ per year}
 ```
 
 ---
 
 ### Gasoline Conversion
 
-```
-P_gas = (P_WTI + $27) / 42  +  $0.82     ($/gallon)
+```math
+P_{\text{gas}} = \frac{P_{\text{WTI}} + 27}{42} + 0.82 \qquad \text{(USD/gallon)}
 ```
 
 | Component | Amount |
