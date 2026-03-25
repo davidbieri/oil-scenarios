@@ -49,16 +49,39 @@ A Monte Carlo simulation tool for forecasting WTI crude oil and retail gasoline 
 
 ### Live Price Fetch
 
-The **↻ Live Price** button (top of the Parameters tab, above the spot price input) fetches two data points simultaneously from Yahoo Finance via a public CORS proxy:
+The **↻ Live Price** button (top of the Parameters tab) fetches four data points simultaneously from Yahoo Finance via a public CORS proxy and auto-populates the relevant parameters:
 
-| Ticker | Data | Populated Field |
+| Ticker | Data | Parameters populated |
 |---|---|---|
 | `CL=F` | WTI front-month futures (USD/bbl) | WTI Spot Price input |
-| `^VIX` | CBOE VIX implied volatility index | VIX macro slider |
+| `^OVX` | CBOE Crude Oil Volatility Index (%) | Heston V₀ = (OVX/100)², θᵥ = blend of OVX² and hist. mean |
+| `^VIX` | CBOE Equity VIX | VIX macro slider |
+| WTI M6 contract (M3 fallback) | 5-month futures curve spread | Backwardation/Contango slider (Futures model) |
 
-**Button states:** amber `↻ Live Price` → spinning `Fetching…` → green `✓ Updated` (with timestamp) or red `✕ Failed` (auto-resets after 4 s).
+**Why OVX, not VIX, for Heston?**
+The VIX measures equity implied volatility; the OVX (CBOE Crude Oil VIX) measures implied volatility directly from WTI options. OVX is the correct instrument for calibrating Heston V₀ — it reflects what the options market is actually pricing for crude oil uncertainty, not equity market fear. The equity VIX is retained for the macro module (jump intensity, drift suppression, vol scaling) because those channels are calibrated to cross-asset equity-commodity literature.
 
-**Caveat:** Yahoo Finance returns the last traded price. Outside market hours (22:00–09:30 ET weekdays, all weekend), this is the prior session close. For TV or presentation use this is generally the relevant reference price.
+**Futures curve calculation:**
+The backwardation/contango parameter is derived from the annualised log-return spread between the front-month contract (M1 = `CL=F`) and the 6-month-out contract:
+
+```
+annualised_slope = ln(M1_price / M6_price) / (5/12)  × 100  %/yr
+```
+
+Positive = backwardation (near > far, typical in tight markets). Negative = contango (near < far, typical in oversupply). The app attempts M6 first and falls back to M3 if the M6 contract is unavailable or illiquid. The fetched value is displayed in the status panel and applied as a rounded integer to the slider.
+
+**OVX → Heston variance mapping:**
+
+```
+V₀    = (OVX / 100)²          ← instantaneous variance from current OVX
+θᵥ    = (V₀ + 0.1225) / 2    ← blend with historical mean (35%² = 0.1225)
+```
+
+The long-run variance θᵥ blends the current OVX reading with the approximate historical mean OVX of ~35%, producing a mean-reverting target that accounts for current conditions without anchoring entirely to a potentially elevated or depressed spot reading.
+
+**Button states:** amber `↻ Live Price` → spinning `Fetching…` → green `✓ Updated` (with WTI, OVX, VIX, and curve slope displayed) or red `✕ Failed` (auto-resets after 4 s).
+
+**Market hours caveat:** Yahoo Finance returns the last traded price. Outside market hours (22:00–09:30 ET weekdays, all weekend) this is the prior session close. For futures, the M6 contract may show a stale price if it is lightly traded outside of pit hours — treat the curve slope as indicative rather than precise in those cases.
 
 ---
 
@@ -128,7 +151,7 @@ Each model exposes parameters that only appear when that model is selected.
 
 | Slider | Range | Step | Interpretation |
 |---|---|---|---|
-| **Backwardation(+)/Contango(−)** | −30% to +30%/yr | 1% | The annualised slope of the WTI futures term structure, which enters as a convenience yield. **Backwardation (positive):** near-month prices exceed far-month (typical when supply is tight; historically +7–12%/yr for WTI). A long futures position rolls up the curve, adding to returns. **Contango (negative):** near-month below far-month (typical during oversupply; e.g., −22% during 2014–16 OPEC glut, −30% during COVID). A long position rolls down, subtracting from returns. |
+| **Backwardation(+)/Contango(−)** | −30% to +30%/yr | 1% | The annualised convenience yield from the WTI futures term structure. **Auto-set from the live futures curve on fetch:** computed as the annualised log-return spread between M1 (CL=F) and M6 (or M3 as fallback). Positive = backwardation (near > far, tight market; historically +7–12%/yr for WTI). Negative = contango (near < far, oversupply; e.g., −22% during 2014–16 OPEC glut, −30% during COVID). |
 
 ---
 
@@ -136,8 +159,8 @@ Each model exposes parameters that only appear when that model is selected.
 
 | Slider | Range | Step | Interpretation |
 |---|---|---|---|
-| **Initial Variance (V₀)** | 0.01–0.80 | 0.01 | Starting value of the instantaneous variance process. The display shows the equivalent annualised volatility σ = √V₀. Set to the current OVX (CBOE Crude Oil VIX) implied vol squared. OVX ≈ 38% → V₀ ≈ 0.14. |
-| **Long-Run Variance (θᵥ)** | 0.01–0.80 | 0.01 | The variance level to which the process mean-reverts. Set to your long-run vol expectation squared. Using the same value as V₀ produces stationary vol. If current vol is elevated, set θᵥ lower to model normalisation. |
+| **Initial Variance (V₀)** | 0.01–0.80 | 0.01 | Starting value of the instantaneous variance process. The display shows the equivalent annualised volatility σ = √V₀. **Auto-set from live OVX on fetch:** V₀ = (OVX/100)². OVX = 38% → V₀ ≈ 0.14. OVX = 50% → V₀ ≈ 0.25. |
+| **Long-Run Variance (θᵥ)** | 0.01–0.80 | 0.01 | The variance level to which the process mean-reverts. **Auto-set on fetch** as a blend of the current OVX reading and the historical mean OVX (~35%): θᵥ = (V₀ + 0.1225) / 2. This prevents the long-run target from anchoring entirely to a temporarily elevated or depressed spot vol. |
 | **Vol-of-Vol (σᵥ)** | 0.05–1.50 | 0.05 | The volatility of the variance process itself. Higher values produce more dramatic vol clustering and fatter tails. Calibrated values for oil typically range 0.30–0.60. Very high σᵥ (>1.0) can cause the Feller condition (2κθ > σᵥ²) to fail, increasing the frequency of variance touching zero; the full-truncation scheme handles this numerically. |
 | **Price-Vol Correlation (ρ)** | −0.99 to +0.99 | 0.01 | Correlation between the Brownian motions driving price and variance. Negative ρ (leverage effect) means rising prices are accompanied by falling vol, and price drops are amplified by rising vol — the typical oil market pattern. Equity markets have ρ ≈ −0.7; oil is typically milder at −0.4 to −0.6. |
 
@@ -171,7 +194,7 @@ All nine sliders adjust the effective drift μ_eff and/or volatility σ_eff appl
 
 | Slider | Range | Step | β coefficient | What it models |
 |---|---|---|---|---|
-| **VIX** | 9–80 | 1 | *Three channels — see below* | CBOE VIX implied volatility index. Neutral level = 20. Above 20, all three channels activate simultaneously: vol scaling, jump amplification, and demand-fear drift suppression. |
+| **VIX (Equity)** | 9–80 | 1 | *Three channels — see below* | CBOE equity VIX. Neutral level = 20. Used for macro fear transmission: jump intensity amplification, vol scaling, and demand-fear drift suppression. **Distinct from OVX** (crude oil implied vol), which is used for Heston calibration. Above 20, all three channels activate simultaneously. |
 | **Fed Rate Change** | −300 to +500 bps | 25 bps | −0.35 per 100 bps | Expected or realised Fed Funds rate change. Models the oil-dollar channel: rate hikes strengthen the USD, which reduces oil demand from non-dollar buyers. −300 bps (emergency cuts) → +10.5% drift boost. +500 bps (Volcker-style tightening) → −17.5% drift penalty. |
 | **DXY Change** | −20% to +25% | 0.5% | −0.90 per 1% | Percentage change in the US Dollar Index. This is the *direct* dollar-oil link, separate from the Fed channel. A 10% DXY appreciation → −9% oil drift. Use one of Fed Rate or DXY to avoid double-counting; DXY is more direct. |
 | **Real Interest Rate** | −4% to +12% | 0.25% | −0.28 per 1% | The ex-ante real interest rate (nominal rate minus inflation expectations). Models the opportunity cost of holding physical commodities vs. financial assets. Negative real rates (as in 2020–21) reduce this cost, supporting oil prices. |
@@ -262,7 +285,9 @@ All WTI values in USD/bbl; gasoline values in USD/gal. Month 0 = current spot.
 
 **800 independent Monte Carlo paths** (400 in comparison mode) discretised at **16 sub-steps per month** via Euler-Maruyama:
 
-$$dt = \frac{1}{12 \times 16} \approx 0.0052 \text{ years}$$
+```
+dt = 1 / (12 × 16) ≈ 0.0052 years
+```
 
 Random number generation: Box-Muller transform (normal), Knuth algorithm (Poisson), Marsaglia-Tsang squeeze method (Gamma). The simulation re-runs automatically with a 300 ms debounce on parameter changes.
 
@@ -272,58 +297,91 @@ Random number generation: Box-Muller transform (normal), Knuth algorithm (Poisso
 
 **1. Geometric Brownian Motion** — Black & Scholes (1973)
 
-$$S_{t+dt} = S_t \exp\!\left[\left(\mu - \tfrac{1}{2}\sigma^2\right) dt + \sigma \sqrt{dt} \, Z_t\right]$$
+```
+S(t+dt) = S(t) · exp[(μ - ½σ²)·dt + σ·√dt·Z]    Z ~ N(0,1)
+```
 
-Log-normal terminal distribution. I.i.d. Gaussian returns. The Itô correction −½σ²dt ensures E[S_T] = S_0·e^{μT}.
+Log-normal terminal distribution. I.i.d. Gaussian returns. The Itô correction −½σ²dt ensures E[S_T] = S₀·exp(μT).
 
 **2. Schwartz Mean-Reversion (Log-OU)** — Schwartz (1997)
 
-$$\ln S_{t+dt} = \ln S_t + \kappa(\ln\theta - \ln S_t) \, dt + \sigma \sqrt{dt} \, Z_t$$
+```
+ln S(t+dt) = ln S(t) + κ·(ln θ - ln S(t))·dt + σ·√dt·Z
+```
 
 **3. Merton Jump-Diffusion** — Merton (1976)
 
-$$S_{t+dt} = S_t \exp\!\left[\left(\mu - \tfrac{1}{2}\sigma^2 - \lambda\bar{k}\right) dt + \sigma\sqrt{dt}\, Z_t + \sum_{i=1}^{N_{dt}} Y_i\right]$$
+```
+S(t+dt) = S(t) · exp[(μ - ½σ² - λk̄)·dt + σ·√dt·Z + Σ Yᵢ]
 
-$N_{dt} \sim \text{Poisson}(\lambda \, dt)$; $Y_i \sim \mathcal{N}(\mu_J, \sigma_J^2)$; $\bar{k} = e^{\mu_J + \sigma_J^2/2} - 1$ (Merton martingale correction).
+  N(dt) ~ Poisson(λ·dt)
+  Yᵢ    ~ N(μ_J, σ_J²)
+  k̄     = exp(μ_J + ½σ_J²) - 1    (Merton martingale correction)
+```
 
 **4. Hamilton Regime-Switching** — Hamilton (1989)
 
 Three-state HMM. Transition matrix rows sum to 1. Regimes: Bull (μ+22%, σ×0.62), Bear (μ−10%, σ×1.28), Crisis (μ−52%, σ×2.90).
 
-$$P = \begin{pmatrix} 0.934 & 0.061 & 0.005 \\ 0.055 & 0.895 & 0.050 \\ 0.048 & 0.168 & 0.784 \end{pmatrix}$$
+```
+P = | 0.934  0.061  0.005 |   (from Bull)
+    | 0.055  0.895  0.050 |   (from Bear)
+    | 0.048  0.168  0.784 |   (from Crisis)
+```
 
 **5. Futures-Implied Forward Curve** — Brennan & Schwartz (1985)
 
-$$S_{t+dt} = S_t \exp\!\left[\left(\mu + \rho - \tfrac{1}{2}\sigma^2\right) dt + \sigma\sqrt{dt}\, Z_t\right]$$
+```
+S(t+dt) = S(t) · exp[(μ + ρ - ½σ²)·dt + σ·√dt·Z]
+```
 
 where ρ is the convenience yield (backwardation = positive; contango = negative).
 
 **6. Heston Stochastic Volatility** — Heston (1993)
 
-$$dS_t = \mu S_t \, dt + \sqrt{v_t} S_t \, dW_t^S, \qquad dv_t = \kappa_v(\theta_v - v_t) \, dt + \sigma_v \sqrt{v_t} \, dW_t^v$$
-$$dW_t^S \, dW_t^v = \rho \, dt$$
+```
+dS  =  μ·S·dt  +  √v·S·dWˢ
+dv  =  κᵥ·(θᵥ - v)·dt  +  σᵥ·√v·dWᵛ
+dWˢ·dWᵛ = ρ·dt
+```
 
 Full-truncation Euler scheme (Lord et al. 2010). κᵥ = 2.0 fixed.
 
 **7. Schwartz-Smith Two-Factor** — Schwartz & Smith (2000)
 
-$$\ln S_t = \chi_t + \xi_t, \quad d\chi_t = -\kappa_\chi \chi_t \, dt + \sigma_\chi \, dW_t^1, \quad d\xi_t = \left(\mu - \tfrac{1}{2}\sigma_\xi^2\right) dt + \sigma_\xi \, dW_t^2$$
-$$dW_t^1 \, dW_t^2 = \rho \, dt, \qquad \chi_0 = 0, \quad \xi_0 = \ln S_0$$
+```
+ln S(t) = χ(t) + ξ(t)
+
+dχ = -κ_χ·χ·dt  +  σ_χ·dW¹          (short-run, mean-reverting)
+dξ = (μ - ½σ_ξ²)·dt  +  σ_ξ·dW²    (long-run, random walk)
+dW¹·dW² = ρ·dt
+
+Initial conditions:  χ₀ = 0,  ξ₀ = ln S₀
+```
 
 **8. Variance-Gamma** — Madan, Carr & Chang (1998)
 
-$$X_{VG}(dt) = \theta_{VG} \cdot G + \sigma\sqrt{G} \cdot Z, \quad G \sim \Gamma(dt/\nu,\, \nu)$$
-$$S_{t+dt} = S_t \exp\!\left[(\mu + \omega) \, dt + X_{VG}(dt)\right], \quad \omega = \tfrac{1}{\nu}\ln\!\left(1 - \theta_{VG}\nu - \tfrac{1}{2}\sigma^2\nu\right)$$
+```
+X_VG(dt) = θ_VG·G + σ·√G·Z          G ~ Gamma(dt/ν, ν)
 
-Note: ω is the martingale correction ensuring E[S_T] = S_0·e^{μT}. The sign is positive for typical oil parameters (negative θ, small ν).
+S(t+dt) = S(t) · exp[(μ + ω)·dt + X_VG(dt)]
+
+ω = (1/ν) · ln(1 - θ_VG·ν - ½σ²·ν)   (martingale correction)
+```
+
+Note: ω is positive for typical oil parameters (negative θ_VG, small ν), ensuring E[S_T] = S₀·exp(μT).
 
 ---
 
 ### Macro Factor Module
 
-$$\mu_{\text{eff}} = \mu_0 + \Delta\mu_{\text{Fed}} + \Delta\mu_{\text{DXY}} + \Delta\mu_{\text{real}} + \Delta\mu_{\pi} + \Delta\mu_{\text{SPX}} + \Delta\mu_{\text{EIA}} + \Delta\mu_{\text{Geo}} + \Delta\mu_{\text{OPEC}} + \Delta\mu_{\text{VIX}}$$
+```
+μ_eff = μ₀ + Δμ_Fed + Δμ_DXY + Δμ_real + Δμ_π + Δμ_SPX
+             + Δμ_EIA + Δμ_Geo + Δμ_OPEC + Δμ_VIX
 
-$$\sigma_{\text{eff}} = \sigma_0 \cdot \underbrace{\left(1 + \tfrac{G}{10} \cdot 0.55\right)}_{\text{geo-risk}} \cdot \underbrace{\left(1 + \tfrac{\max(V-20,0)}{10} \cdot 0.08\right)}_{\text{VIX}}$$
+σ_eff = σ₀ · (1 + G/10 · 0.55)          ← geo-risk scaling
+             · (1 + max(V-20,0)/10 · 0.08) ← VIX scaling
+```
 
 | Term | Formula | Source |
 |---|---|---|
@@ -343,21 +401,29 @@ $$\sigma_{\text{eff}} = \sigma_0 \cdot \underbrace{\left(1 + \tfrac{G}{10} \cdot
 
 **Channel 1 — Volatility scaling:** OVX tracks VIX with correlation ≈ 0.72. Above VIX = 20:
 
-$$\sigma_{\text{eff}} \leftarrow \sigma_{\text{eff}} \times \left(1 + \frac{\max(V-20,0)}{10} \times 0.08\right)$$
+```
+σ_eff = σ_eff × (1 + max(V-20, 0)/10 × 0.08)
+```
 
 **Channel 2 — Jump intensity amplification:** Power-law, calibrated to Todorov (2010):
 
-$$\lambda_{\text{eff}} = \lambda_0 \times \left(\frac{V}{20}\right)^{1.4}$$
+```
+λ_eff = λ₀ × (V/20)^1.4
+```
 
 **Channel 3 — Drift suppression:** Demand-destruction fear above VIX = 20:
 
-$$\Delta\mu_{\text{VIX}} = -\max(V-20,0) \times 0.018 \text{ per year}$$
+```
+Δμ_VIX = -max(V-20, 0) × 0.018  per year
+```
 
 ---
 
 ### Gasoline Conversion
 
-$$P_{\text{gas}} = \frac{P_{\text{WTI}} + \$27}{42} + \$0.82 \quad \text{(\$/gallon)}$$
+```
+P_gas = (P_WTI + $27) / 42  +  $0.82     ($/gallon)
+```
 
 | Component | Amount |
 |---|---|
@@ -675,21 +741,25 @@ Runs mini-simulations (300 paths, 6-month horizon) for the first eight historica
 
 ## Limitations and Caveats
 
-1. **Indicative calibration only.** Macro-factor β coefficients are drawn from published econometric studies and are not re-estimated from current data. Treat the output as scenario exploration, not point forecasts.
+1. **Partial market calibration.** The Live Price button now fetches WTI spot, OVX (crude oil implied vol), equity VIX, and the WTI futures curve slope — the four most important market signals. Parameters not fetched (Heston σᵥ and ρ, VG ν and θ, jump parameters) are still user-set and should be calibrated manually against the current options smile if precision is needed.
 
-2. **VIX is static throughout the horizon.** No mean-reverting VIX process is simulated. In practice VIX reverts toward ~20 within 3–6 months of a spike. For longer horizons, set VIX closer to its expected average rather than its current spike value.
+2. **OVX → Heston mapping is approximate.** V₀ = (OVX/100)² gives the at-the-money implied variance. It does not capture the full implied vol surface (skew, term structure). A fully calibrated Heston model requires fitting to the cross-section of WTI option prices at multiple strikes and maturities.
 
-3. **Heston κᵥ is fixed at 2.0.** The vol mean-reversion speed is not user-controllable. Modify in source code if needed for calibration.
+3. **Futures curve slope uses only two points.** The M1-vs-M6 spread gives a single slope estimate, ignoring the full shape of the term structure (which may be non-linear, e.g., humped). For a complete term structure, the Schwartz-Smith model would need to be calibrated to all liquid contracts simultaneously.
 
-4. **Schwartz-Smith not forward-curve calibrated.** The long-run factor drift uses the user-supplied μ rather than being bootstrapped to observed futures prices. For a calibrated version, extract μ and σ_ξ from the current futures term structure.
+4. **VIX is static throughout the horizon.** No mean-reverting VIX process is simulated. In practice VIX reverts toward ~20 within 3–6 months of a spike. For longer horizons, set VIX closer to its expected average rather than its current spike value.
 
-5. **DXY and Fed channels overlap.** Both affect oil through the USD. Using both simultaneously at large magnitudes double-counts the dollar channel. Prefer DXY for a direct view on currency; use Fed only when the rate-cycle effect is the primary driver.
+5. **Heston κᵥ is fixed at 2.0.** The vol mean-reversion speed is not user-controllable. Modify in source code if needed for calibration.
 
-6. **Crack spread is a long-run average.** The $27/bbl margin varies seasonally (±$15/bbl) and by geography and refinery configuration. US Gulf Coast gasoline crack spreads in summer can reach $40–$50/bbl; winter distillate cracks are often higher than summer.
+6. **Schwartz-Smith not forward-curve calibrated.** The long-run factor drift uses the user-supplied μ rather than being bootstrapped to observed futures prices. For a calibrated version, extract μ and σ_ξ from the current futures term structure.
 
-7. **Macro channels are independent.** The nine adjustment channels are additive and treated as uncorrelated. In practice, VIX and SPX, Fed rates and DXY, and geopolitical risk and OPEC tightness are strongly correlated. Avoid simultaneously setting correlated channels to opposing extremes.
+7. **DXY and Fed channels overlap.** Both affect oil through the USD. Using both simultaneously at large magnitudes double-counts the dollar channel. Prefer DXY for a direct view on currency; use Fed only when the rate-cycle effect is the primary driver.
 
-8. **Browser-based precision.** JavaScript 64-bit arithmetic with no variance reduction techniques (antithetic variates, quasi-Monte Carlo, control variates). For production risk management applications, a Python/Julia implementation with 10,000+ paths and Sobol sequences is recommended.
+8. **Crack spread is a long-run average.** The $27/bbl margin varies seasonally (±$15/bbl) and by geography and refinery configuration. US Gulf Coast gasoline crack spreads in summer can reach $40–$50/bbl; winter distillate cracks are often higher than summer.
+
+9. **Macro channels are independent.** The nine adjustment channels are additive and treated as uncorrelated. In practice, VIX and SPX, Fed rates and DXY, and geopolitical risk and OPEC tightness are strongly correlated. Avoid simultaneously setting correlated channels to opposing extremes.
+
+10. **Browser-based precision.** JavaScript 64-bit arithmetic with no variance reduction techniques (antithetic variates, quasi-Monte Carlo, control variates). For production risk management applications, a Python/Julia implementation with 10,000+ paths and Sobol sequences is recommended.
 
 ---
 
