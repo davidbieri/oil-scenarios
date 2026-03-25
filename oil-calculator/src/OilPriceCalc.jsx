@@ -303,6 +303,17 @@ const MODELS = [
   { id: 'vg',      short: 'Var-Gamma', name: 'Variance-Gamma (Skewness)',   refs: 'Madan et al. (1998)' },
 ];
 
+// ─── PADD REGIONAL DATA ─────────────────────────────────────────────────────
+
+const PADDS = [
+  { id: 'national', short: 'US Avg',   label: 'National Average',      color: C.amber,   wtiLinkage: 0.92, taxMargin: 0.820, spreadPassThrough: 0.60, notes: 'Weighted average of all PADD districts' },
+  { id: 'padd1',    short: 'East Coast',label: 'PADD 1 — East Coast',  color: C.blue,    wtiLinkage: 0.78, taxMargin: 0.920, spreadPassThrough: 0.35, notes: 'Brent-linked imports; highest state taxes (NY, PA, CT)' },
+  { id: 'padd2',    short: 'Midwest',   label: 'PADD 2 — Midwest',     color: C.green,   wtiLinkage: 0.97, taxMargin: 0.760, spreadPassThrough: 0.80, notes: 'Cushing hub; near-pure WTI linkage; moderate taxes' },
+  { id: 'padd3',    short: 'Gulf Coast',label: 'PADD 3 — Gulf Coast',  color: C.orange,  wtiLinkage: 0.98, taxMargin: 0.680, spreadPassThrough: 0.85, notes: 'Refinery corridor; lowest taxes (TX, LA); highest WTI linkage' },
+  { id: 'padd4',    short: 'Rockies',   label: 'PADD 4 — Rocky Mtn',   color: C.violet,  wtiLinkage: 0.94, taxMargin: 0.790, spreadPassThrough: 0.70, notes: 'Landlocked; WTI-Cushing + pipeline basis; thin margins' },
+  { id: 'padd5',    short: 'West Coast',label: 'PADD 5 — West Coast',  color: C.pink,    wtiLinkage: 0.65, taxMargin: 1.180, spreadPassThrough: 0.25, notes: 'ANS/Brent-linked; CA LCFS + cap-and-trade; highest retail' },
+];
+
 // ─── HISTORICAL SCENARIOS ────────────────────────────────────────────────────
 
 const SCENARIOS = [
@@ -382,11 +393,14 @@ const SCENARIOS = [
 
 // ─── GASOLINE CONVERSION (3-2-1 crack spread) ─────────────────────────────────
 
-function wtiToGasoline(wti) {
-  return ((wti + 27) / 42 + 0.82);
+function wtiToGasoline(wti, regionId = 'national', brentSpread = 0) {
+  const r = PADDS.find(d => d.id === regionId) ?? PADDS[0];
+  const crudeInput = (wti + 27) / 42;
+  const spreadAdj  = r.wtiLinkage * brentSpread * r.spreadPassThrough / 42;
+  return crudeInput + spreadAdj + r.taxMargin;
 }
-function fmtGas(wti) {
-  return `$${wtiToGasoline(wti).toFixed(2)}`;
+function fmtGas(wti, regionId = 'national', brentSpread = 0) {
+  return `$${wtiToGasoline(wti, regionId, brentSpread).toFixed(2)}`;
 }
 
 // ─── CSV EXPORT ───────────────────────────────────────────────────────────────
@@ -531,6 +545,7 @@ export default function OilPriceCalc() {
     fedDelta: 0, spxMood: 0, geoRisk: 3.5, opecTight: 5, vix: 20,
     dxy: 0, realRate: 0, inflation: 0, inventory: 0,
     seasonal: false, seasonalAmp: 4, startMonth: 0,
+    brentSpread: -3.5, selectedRegion: 'national',
     priceTarget: 90,
     compareModels: ['gbm', 'ou', 'jump', 'regime', 'futures'],
   };
@@ -1046,6 +1061,30 @@ export default function OilPriceCalc() {
                     hint="Amplifies σ (+55% max) and λ (+180% max)" />
                   <SliderRow label="OPEC Supply Tightness" value={p.opecTight} min={0} max={10} step={0.5}
                     onChange={v => set('opecTight', v)} fmt={v => `${v.toFixed(1)} / 10`} />
+                  {lastFetched?.spread !== undefined && (
+                    <div style={{ background: `${C.blue}18`, border: `1px solid ${C.blue}40`,
+                      borderRadius: 6, padding: '6px 10px', marginBottom: 10, fontSize: 10.5,
+                      fontFamily: "'DM Sans',sans-serif", color: C.blue }}>
+                      ↻ Live: WTI ${lastFetched.wti} · Brent ${lastFetched.brent} · Spread{' '}
+                      <strong>{lastFetched.spread > 0 ? '+' : ''}{lastFetched.spread?.toFixed(2)}</strong>
+                    </div>
+                  )}
+                  <SliderRow
+                    label="WTI–Brent Spread"
+                    value={p.brentSpread}
+                    min={-15} max={5} step={0.5}
+                    onChange={v => set('brentSpread', v)}
+                    fmt={v => `${v > 0 ? '+' : ''}${v.toFixed(1)} $/bbl`}
+                    hint={
+                      p.brentSpread < -5
+                        ? `${p.brentSpread.toFixed(1)} — significant friction / segmentation`
+                        : p.brentSpread < -2
+                        ? `${p.brentSpread.toFixed(1)} — moderate discount (normal)`
+                        : p.brentSpread < 0
+                        ? `${p.brentSpread.toFixed(1)} — near parity`
+                        : `${p.brentSpread.toFixed(1)} — WTI premium (rare)`
+                    }
+                  />
                 </div>
 
                 {/* Seasonal */}
@@ -1191,7 +1230,7 @@ export default function OilPriceCalc() {
               {/* ── CHART TAB BAR ── */}
               <div style={{ display: 'flex', gap: 0, marginBottom: 14,
                 borderBottom: `1px solid ${C.border}`, overflowX: 'auto' }}>
-                {[['fan','Fan Chart'],['hist','Distribution'],['gas','Gasoline'],['compare','Comparison'],['risk','Risk']].map(([id,lbl]) => (
+                {[['fan','Fan Chart'],['hist','Distribution'],['gas','Gasoline'],['compare','Comparison'],['risk','Risk'],['regional','Regional']].map(([id,lbl]) => (
                   <TabBtn key={id} id={id} active={chartTab === id} onClick={setChartTab}>{lbl}</TabBtn>
                 ))}
                 {chartTab === 'fan' && results && (
@@ -1305,25 +1344,60 @@ export default function OilPriceCalc() {
               {chartTab === 'gas' && (
                 <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, padding: '16px 14px' }}>
                   <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 17, fontWeight: 600, color: C.t1, marginBottom: 2 }}>
-                    Implied Retail Gasoline · <span style={{ fontStyle: 'italic', fontWeight: 500, fontSize: 15 }}>$/gallon (US avg)</span>
+                    Implied Retail Gasoline · <span style={{ fontStyle: 'italic', fontWeight: 500, fontSize: 15 }}>$/gallon</span>
                   </div>
-                  <div style={{ color: C.t3, fontSize: 10.5, marginBottom: 18 }}>
-                    Retail = (WTI + $27 crack) / 42 gal + $0.82 (taxes + margin)
+                  <div style={{ color: C.t3, fontSize: 10.5, marginBottom: 12 }}>
+                    3-2-1 crack spread formula · region-specific taxes & WTI-linkage · WTI–Brent spread adjusted
                   </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(135px,1fr))', gap: 8, marginBottom: 18 }}>
+                  {/* Region selector */}
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 16 }}>
+                    {PADDS.map(r => (
+                      <button key={r.id} onClick={() => set('selectedRegion', r.id)}
+                        style={{
+                          background: p.selectedRegion === r.id ? r.color : 'transparent',
+                          color: p.selectedRegion === r.id ? C.bg0 : C.t3,
+                          border: `1px solid ${p.selectedRegion === r.id ? r.color : C.border}`,
+                          borderRadius: 6, padding: '4px 10px', cursor: 'pointer',
+                          fontSize: 11, fontFamily: "'DM Sans',sans-serif", fontWeight: 600,
+                          transition: 'all .15s', whiteSpace: 'nowrap',
+                        }}>
+                        {r.short}
+                      </button>
+                    ))}
+                  </div>
+                  {/* Active region note */}
+                  {(() => {
+                    const r = PADDS.find(d => d.id === p.selectedRegion) ?? PADDS[0];
+                    return (
+                      <div style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 7,
+                        padding: '7px 12px', marginBottom: 14, fontSize: 10.5, color: C.t3, lineHeight: 1.5 }}>
+                        <span style={{ color: r.color, fontWeight: 600 }}>{r.label}</span>
+                        {' — '}{r.notes}
+                        {' · '}WTI-linkage: <span style={{ color: C.t1 }}>{(r.wtiLinkage * 100).toFixed(0)}%</span>
+                        {' · '}Tax+margin: <span style={{ color: C.t1 }}>${r.taxMargin.toFixed(3)}/gal</span>
+                        {p.brentSpread < -2 && (
+                          <span> · Spread adj: <span style={{ color: C.green }}>
+                            −${Math.abs(r.wtiLinkage * p.brentSpread * r.spreadPassThrough / 42).toFixed(3)}/gal
+                          </span></span>
+                        )}
+                      </div>
+                    );
+                  })()}
+                  {/* Percentile cards */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(130px,1fr))', gap: 8, marginBottom: 18 }}>
                     {[
-                      { lbl: '5th Pct', wti: results.stats.p5t, sub: 'Bearish' },
-                      { lbl: '25th Pct', wti: results.stats.p25t, sub: 'Below base' },
-                      { lbl: 'Median',   wti: results.stats.median, sub: 'Base case' },
-                      { lbl: 'Mean',     wti: results.stats.mean, sub: 'Expected' },
-                      { lbl: '75th Pct', wti: results.stats.p75t, sub: 'Above base' },
-                      { lbl: '95th Pct', wti: results.stats.p95t, sub: 'Bullish' },
+                      { lbl: '5th Pct',  wti: results.stats.p5t,    sub: 'Bearish' },
+                      { lbl: '25th Pct', wti: results.stats.p25t,   sub: 'Below base' },
+                      { lbl: 'Median',   wti: results.stats.median,  sub: 'Base case' },
+                      { lbl: 'Mean',     wti: results.stats.mean,    sub: 'Expected' },
+                      { lbl: '75th Pct', wti: results.stats.p75t,   sub: 'Above base' },
+                      { lbl: '95th Pct', wti: results.stats.p95t,   sub: 'Bullish' },
                     ].map(({ lbl, wti, sub }) => (
                       <div key={lbl} style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 8, padding: '11px 12px' }}>
                         <div style={{ color: C.t3, fontSize: 9.5, fontWeight: 700, letterSpacing: '0.1em',
                           textTransform: 'uppercase', marginBottom: 5 }}>{lbl}</div>
-                        <div style={{ color: C.green, fontSize: 22, fontFamily: "'JetBrains Mono',monospace" }}>
-                          {fmtGas(wti)}
+                        <div style={{ color: C.green, fontSize: 20, fontFamily: "'JetBrains Mono',monospace" }}>
+                          {fmtGas(wti, p.selectedRegion, p.brentSpread)}
                         </div>
                         <div style={{ color: C.t4, fontSize: 10, fontFamily: "'JetBrains Mono',monospace", marginTop: 3 }}>
                           WTI ${wti.toFixed(2)}
@@ -1332,25 +1406,35 @@ export default function OilPriceCalc() {
                       </div>
                     ))}
                   </div>
-                  <div style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 8, padding: '12px 14px' }}>
-                    <div style={{ color: C.amber, fontSize: 12, fontWeight: 600, marginBottom: 9 }}>
-                      Price Decomposition at Median WTI ${results.stats.median.toFixed(2)}
-                    </div>
-                    {[
-                      ['WTI crude oil cost',    (results.stats.median/42).toFixed(3), C.t1],
-                      ['3-2-1 crack spread',    (27/42).toFixed(3),                   C.amber],
-                      ['Federal excise tax',     '0.184',                              C.t2],
-                      ['State & local tax (avg)','0.343',                              C.t2],
-                      ['Distribution & retail',  '0.293',                              C.t2],
-                      ['─── Total retail ───',   wtiToGasoline(results.stats.median).toFixed(3), C.green],
-                    ].map(([item, val, clr]) => (
-                      <div key={item} style={{ display: 'flex', justifyContent: 'space-between',
-                        padding: '4px 0', borderBottom: `1px solid ${C.border}` }}>
-                        <span style={{ color: C.t3, fontSize: 11 }}>{item}</span>
-                        <span style={{ color: clr, fontFamily: "'JetBrains Mono',monospace", fontSize: 11.5 }}>${val}/gal</span>
+                  {/* Price decomposition */}
+                  {(() => {
+                    const r    = PADDS.find(d => d.id === p.selectedRegion) ?? PADDS[0];
+                    const wti  = results.stats.median;
+                    const spreadAdj = r.wtiLinkage * p.brentSpread * r.spreadPassThrough / 42;
+                    return (
+                      <div style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 8, padding: '12px 14px' }}>
+                        <div style={{ color: C.amber, fontSize: 12, fontWeight: 600, marginBottom: 9 }}>
+                          Price Decomposition · Median WTI ${wti.toFixed(2)} · {r.short}
+                        </div>
+                        {[
+                          ['WTI crude input',             (wti / 42 * r.wtiLinkage).toFixed(3),    C.t1],
+                          ['Non-WTI crude input',         (wti / 42 * (1 - r.wtiLinkage)).toFixed(3), C.t3],
+                          ['3-2-1 crack spread',           (27 / 42).toFixed(3),                    C.amber],
+                          ['WTI–Brent spread adj.',        spreadAdj.toFixed(3),                    spreadAdj < 0 ? C.green : C.red],
+                          ['Tax + dist. + retail margin', r.taxMargin.toFixed(3),                   C.t2],
+                          ['─── Total retail ───',        wtiToGasoline(wti, r.id, p.brentSpread).toFixed(3), C.green],
+                        ].map(([item, val, clr]) => (
+                          <div key={item} style={{ display: 'flex', justifyContent: 'space-between',
+                            padding: '4px 0', borderBottom: `1px solid ${C.border}` }}>
+                            <span style={{ color: C.t3, fontSize: 11 }}>{item}</span>
+                            <span style={{ color: clr, fontFamily: "'JetBrains Mono',monospace", fontSize: 11.5 }}>
+                              {parseFloat(val) >= 0 ? '$' : '−$'}{Math.abs(parseFloat(val)).toFixed(3)}/gal
+                            </span>
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
+                    );
+                  })()}
                 </div>
               )}
 
@@ -1555,6 +1639,130 @@ export default function OilPriceCalc() {
                         </tbody>
                       </table>
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ─── REGIONAL COMPARISON ─── */}
+              {chartTab === 'regional' && (
+                <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, padding: '16px 14px' }}>
+                  <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 17, fontWeight: 600, color: C.t1, marginBottom: 2 }}>
+                    Regional Gasoline Price Divergence
+                  </div>
+                  <div style={{ color: C.t3, fontSize: 10.5, marginBottom: 16 }}>
+                    Implied retail price across all PADD districts at median WTI forecast · WTI–Brent spread adjusted
+                  </div>
+                  {/* Bar chart — one bar per region, at 5 percentile points */}
+                  <ResponsiveContainer width="100%" height={300}>
+                    <ComposedChart
+                      data={PADDS.map(r => {
+                        const pts = ['p5t','p25t','median','p75t','p95t'].reduce((acc, k) => {
+                          acc[k] = parseFloat(wtiToGasoline(results.stats[k] ?? results.stats.median, r.id, p.brentSpread).toFixed(3));
+                          return acc;
+                        }, {});
+                        return { region: r.short, ...pts, color: r.color };
+                      })}
+                      layout="vertical"
+                      margin={{ top: 4, right: 60, bottom: 2, left: 0 }}
+                    >
+                      <CartesianGrid stroke={C.border} strokeDasharray="2 4" strokeOpacity={0.4} horizontal={false} />
+                      <XAxis type="number" domain={['auto','auto']}
+                        tick={{ fill: C.t3, fontSize: 10, fontFamily: "'JetBrains Mono',monospace" }}
+                        axisLine={{ stroke: C.border }} tickLine={false}
+                        tickFormatter={v => `$${v.toFixed(2)}`} />
+                      <YAxis type="category" dataKey="region" width={80}
+                        tick={{ fill: C.t2, fontSize: 10.5, fontFamily: "'DM Sans',monospace" }}
+                        axisLine={false} tickLine={false} />
+                      <Tooltip
+                        content={({ active, payload }) => {
+                          if (!active || !payload?.length) return null;
+                          const d = payload[0]?.payload;
+                          if (!d) return null;
+                          return (
+                            <div style={{ background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 8,
+                              padding: '10px 14px', fontFamily: "'JetBrains Mono',monospace", fontSize: 11 }}>
+                              <div style={{ color: d.color, fontWeight: 600, marginBottom: 6 }}>{d.region}</div>
+                              {[['P5',d.p5t],['P25',d.p25t],['Median',d.median],['P75',d.p75t],['P95',d.p95t]].map(([k,v]) => (
+                                <div key={k} style={{ display:'flex', justifyContent:'space-between', gap: 16, marginBottom: 2 }}>
+                                  <span style={{ color: C.t3 }}>{k}</span>
+                                  <span style={{ color: k === 'Median' ? C.amber : C.t2 }}>${v?.toFixed(3)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        }}
+                      />
+                      <Bar dataKey="median" barSize={18} radius={[0,3,3,0]} isAnimationActive={false}>
+                        {PADDS.map((r, i) => <Cell key={i} fill={r.color} fillOpacity={0.82} />)}
+                      </Bar>
+                      <Line type="monotone" dataKey="p5t"  stroke={`${C.red}70`}   strokeWidth={1.5} dot={{ r: 3, fill: C.red, strokeWidth: 0 }}   isAnimationActive={false} />
+                      <Line type="monotone" dataKey="p95t" stroke={`${C.green}70`} strokeWidth={1.5} dot={{ r: 3, fill: C.green, strokeWidth: 0 }} isAnimationActive={false} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                  <div style={{ display: 'flex', gap: 16, justifyContent: 'center', marginTop: 10, flexWrap: 'wrap' }}>
+                    {[
+                      { line: C.amber,  lbl: 'Median (bar height)' },
+                      { dot: C.green,   lbl: 'P95 (dot)' },
+                      { dot: C.red,     lbl: 'P5 (dot)' },
+                    ].map(({ line, dot, lbl }) => (
+                      <div key={lbl} style={{ display: 'flex', alignItems: 'center', gap: 5,
+                        color: C.t3, fontSize: 10, fontFamily: "'DM Sans',sans-serif" }}>
+                        {line && <div style={{ width: 16, height: 3, background: line, borderRadius: 1 }} />}
+                        {dot  && <div style={{ width: 8, height: 8, borderRadius: '50%', background: dot }} />}
+                        {lbl}
+                      </div>
+                    ))}
+                  </div>
+                  {/* Regional comparison table */}
+                  <div style={{ marginTop: 14, overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: "'JetBrains Mono',monospace" }}>
+                      <thead>
+                        <tr>
+                          {['Region','WTI-Link','Tax+Marg','P5','Median','P95','vs US Avg'].map(h => (
+                            <th key={h} style={{ color: C.t3, fontFamily: "'DM Sans',sans-serif",
+                              fontSize: 9.5, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase',
+                              padding: '4px 8px', borderBottom: `1px solid ${C.border}`, textAlign: 'left' }}>
+                              {h}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {PADDS.map(r => {
+                          const med    = wtiToGasoline(results.stats.median, r.id, p.brentSpread);
+                          const natMed = wtiToGasoline(results.stats.median, 'national', p.brentSpread);
+                          const diff   = med - natMed;
+                          return (
+                            <tr key={r.id}>
+                              <td style={{ color: r.color, padding: '5px 8px', borderBottom: `1px solid ${C.border}`, fontFamily: "'DM Sans',sans-serif", fontWeight: 600 }}>{r.short}</td>
+                              <td style={{ color: C.t2, padding: '5px 8px', borderBottom: `1px solid ${C.border}` }}>{(r.wtiLinkage * 100).toFixed(0)}%</td>
+                              <td style={{ color: C.t2, padding: '5px 8px', borderBottom: `1px solid ${C.border}` }}>${r.taxMargin.toFixed(3)}</td>
+                              <td style={{ color: C.red,   padding: '5px 8px', borderBottom: `1px solid ${C.border}` }}>${wtiToGasoline(results.stats.p5t, r.id, p.brentSpread).toFixed(2)}</td>
+                              <td style={{ color: C.amber, padding: '5px 8px', borderBottom: `1px solid ${C.border}` }}>${med.toFixed(2)}</td>
+                              <td style={{ color: C.green, padding: '5px 8px', borderBottom: `1px solid ${C.border}` }}>${wtiToGasoline(results.stats.p95t, r.id, p.brentSpread).toFixed(2)}</td>
+                              <td style={{ color: Math.abs(diff) < 0.01 ? C.t3 : diff > 0 ? C.red : C.green,
+                                padding: '5px 8px', borderBottom: `1px solid ${C.border}` }}>
+                                {diff >= 0 ? '+' : ''}{diff.toFixed(3)}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  {/* Spread friction note */}
+                  <div style={{ marginTop: 14, background: C.bg2, border: `1px solid ${C.border}`,
+                    borderRadius: 7, padding: '10px 12px', fontSize: 10.5, color: C.t3, lineHeight: 1.6 }}>
+                    <span style={{ color: C.t2, fontWeight: 600 }}>WTI–Brent spread: </span>
+                    {p.brentSpread > 0 ? '+' : ''}{p.brentSpread.toFixed(1)} $/bbl.
+                    {' '}
+                    {p.brentSpread < -5
+                      ? 'Significant segmentation. Gulf Coast refiners see the largest margin expansion. East Coast and West Coast consumers see minimal benefit due to lower WTI linkage.'
+                      : p.brentSpread < -2
+                      ? 'Moderate WTI discount. Midwest (PADD 2) and Gulf Coast consumers benefit most; California least.'
+                      : p.brentSpread >= 0
+                      ? 'WTI at parity or premium — no differential advantage for WTI-linked regions.'
+                      : 'Near parity. Regional spread differentials are driven primarily by taxes and logistics.'}
                   </div>
                 </div>
               )}
