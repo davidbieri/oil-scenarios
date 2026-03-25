@@ -380,13 +380,87 @@ const SCENARIOS = [
   },
 ];
 
-// ─── GASOLINE CONVERSION (3-2-1 crack spread) ─────────────────────────────────
+// ─── PADD REGIONAL DATA ───────────────────────────────────────────────────────
+// WTI linkage: fraction of refinery crude input that is WTI-priced
+// (vs Brent-linked, e.g. ANS on West Coast, imported crudes on East Coast)
+// spreadPassThrough: fraction of WTI-Brent crack expansion passed to consumers
 
-function wtiToGasoline(wti) {
-  return ((wti + 27) / 42 + 0.82);
+const PADDS = [
+  {
+    id: 'national', label: 'US National Avg', short: 'US Avg',
+    color: '#94a3b8',
+    taxMargin: 0.820,  // federal $0.184 + state avg $0.343 + dist/retail $0.293
+    wtiLinkage: 0.78,  // blended national WTI input share
+    spreadPassThrough: 0.30,
+    notes: 'EIA national average. Blend of all PADD districts.',
+  },
+  {
+    id: 'padd1', label: 'East Coast (PADD 1)', short: 'East Coast',
+    color: '#38bdf8',
+    taxMargin: 0.892,  // higher state taxes (NY $0.453, CT $0.448 avg)
+    wtiLinkage: 0.62,  // significant seaborne imports; partly Brent-linked
+    spreadPassThrough: 0.28,
+    notes: 'Pipeline-dependent from Gulf Coast. Higher taxes & import exposure.',
+  },
+  {
+    id: 'padd2', label: 'Midwest (PADD 2)', short: 'Midwest',
+    color: '#f59e0b',
+    taxMargin: 0.764,  // moderate state taxes
+    wtiLinkage: 0.96,  // Cushing hub; almost entirely WTI-priced
+    spreadPassThrough: 0.34,
+    notes: 'Cushing hub proximity; most WTI-integrated market.',
+  },
+  {
+    id: 'padd3', label: 'Gulf Coast (PADD 3)', short: 'Gulf Coast',
+    color: '#10b981',
+    taxMargin: 0.672,  // low state taxes (TX $0.20, LA $0.20)
+    wtiLinkage: 1.00,  // refinery epicentre; 100% WTI input
+    spreadPassThrough: 0.36,
+    notes: 'Refinery concentration; cheapest region. Widest spread benefit.',
+  },
+  {
+    id: 'padd4', label: 'Rocky Mountain (PADD 4)', short: 'Rocky Mtn',
+    color: '#a78bfa',
+    taxMargin: 0.786,
+    wtiLinkage: 0.88,  // local Rockies crude, WTI-correlated
+    spreadPassThrough: 0.30,
+    notes: 'Isolated; limited pipeline connectivity. Local Rockies crude.',
+  },
+  {
+    id: 'padd5', label: 'West Coast excl. CA (PADD 5)', short: 'West Coast',
+    color: '#fb923c',
+    taxMargin: 0.962,  // high state taxes (WA $0.494, OR $0.38)
+    wtiLinkage: 0.55,  // Alaska North Slope crude is Brent-linked
+    spreadPassThrough: 0.24,
+    notes: 'ANS crude is Brent-linked; limited spread benefit vs Gulf Coast.',
+  },
+  {
+    id: 'ca', label: 'California', short: 'California',
+    color: '#f43f5e',
+    // CA state tax $0.579 + LCFS credit ~$0.20 + cap-and-trade ~$0.15 + dist $0.293
+    taxMargin: 1.406,
+    wtiLinkage: 0.42,  // mix of ANS + some imported Brent-linked
+    spreadPassThrough: 0.20,
+    notes: 'CA state tax + LCFS + cap-and-trade. Highest-cost market. Least WTI-linked.',
+  },
+];
+
+// ─── GASOLINE CONVERSION (region-aware, spread-adjusted) ─────────────────────
+// spread = WTI − Brent (negative when WTI cheaper than Brent)
+// When spread < 0, WTI-linked regions benefit: lower effective input cost
+// crack expansion partially passes through to consumers
+
+function wtiToGasoline(wti, region = null, spread = 0) {
+  const r = region ? (PADDS.find(d => d.id === region) ?? PADDS[0]) : PADDS[0];
+  // Base formula: (WTI + $27 crack) / 42 + regional tax+margin
+  const base = (wti + 27) / 42 + r.taxMargin;
+  // Spread adjustment: when WTI cheap vs Brent, high-WTI-linkage regions get cheaper
+  // spread is WTI−Brent; negative = WTI cheaper; adjustment reduces pump price
+  const spreadAdj = (r.wtiLinkage * spread * r.spreadPassThrough) / 42;
+  return Math.max(0.50, base + spreadAdj);
 }
-function fmtGas(wti) {
-  return `$${wtiToGasoline(wti).toFixed(2)}`;
+function fmtGas(wti, region = null, spread = 0) {
+  return `$${wtiToGasoline(wti, region, spread).toFixed(2)}`;
 }
 
 // ─── CSV EXPORT ───────────────────────────────────────────────────────────────
@@ -533,6 +607,8 @@ export default function OilPriceCalc() {
     seasonal: false, seasonalAmp: 4, startMonth: 0,
     priceTarget: 90,
     compareModels: ['gbm', 'ou', 'jump', 'regime', 'futures'],
+    brentSpread: -2,       // WTI − Brent in $/bbl; typically −1 to −5
+    selectedRegion: 'national',
   };
 
   const [p, setP]                 = useState(defaultP);
@@ -547,6 +623,7 @@ export default function OilPriceCalc() {
   const [lastFetched, setLastFetched] = useState(null);   // { wti, vix, ts }
   const debMain = useRef(null);
   const debCmp  = useRef(null);
+  const preScenarioP = useRef(null); // snapshot of params before scenario applied
 
   const set = useCallback((key, val) => setP(prev => ({ ...prev, [key]: val })), []);
 
@@ -600,9 +677,20 @@ export default function OilPriceCalc() {
   }, [p, chartTab]);
 
   function applyScenario(sc) {
-    setP(prev => ({ ...prev, ...sc.params }));
-    setAppliedScenario(sc.id);
-    setSideTab('params');
+    if (appliedScenario === sc.id) {
+      // Toggle OFF — restore pre-scenario params
+      if (preScenarioP.current) setP(preScenarioP.current);
+      setAppliedScenario(null);
+      preScenarioP.current = null;
+    } else {
+      // Toggle ON — snapshot current params, then apply scenario
+      setP(prev => {
+        preScenarioP.current = prev;
+        return { ...prev, ...sc.params };
+      });
+      setAppliedScenario(sc.id);
+      setSideTab('params');
+    }
   }
 
   function toggleCompareModel(mId) {
@@ -644,16 +732,19 @@ export default function OilPriceCalc() {
     };
 
     try {
-      // ── Core fetch: spot, OVX, equity VIX ───────────────────────────────
-      const [wtiRaw, ovxRaw, vixRaw] = await Promise.all([
+      // ── Core fetch: spot, OVX, equity VIX, Brent ────────────────────────
+      const [wtiRaw, ovxRaw, vixRaw, brentRaw] = await Promise.all([
         fetchQuote('CL=F'),
         fetchQuote('^OVX'),
         fetchQuote('^VIX'),
+        fetchQuote('BZ=F'),
       ]);
 
-      const wti = parseFloat(wtiRaw.toFixed(2));
-      const ovx = parseFloat(ovxRaw.toFixed(1));   // CBOE Crude Oil VIX, %
-      const vix = Math.round(vixRaw);
+      const wti    = parseFloat(wtiRaw.toFixed(2));
+      const ovx    = parseFloat(ovxRaw.toFixed(1));
+      const vix    = Math.round(vixRaw);
+      const brent  = parseFloat(brentRaw.toFixed(2));
+      const spread = parseFloat((wtiRaw - brentRaw).toFixed(2)); // typically negative
 
       // ── Futures curve: try M1 vs M6, fall back to M3 ─────────────────────
       let curveSlopePct = null;  // annualised %/yr, + = backwardation
@@ -687,6 +778,7 @@ export default function OilPriceCalc() {
           vix:          Math.min(80, Math.max(9, vix)),
           hestonV0:     Math.min(0.80, Math.max(0.01, hestonV0fromOVX)),
           hestonThetaV: Math.min(0.80, Math.max(0.01, hestonThetaFromOVX)),
+          brentSpread:  Math.max(-15, Math.min(5, parseFloat(spread.toFixed(1)))),
         };
         if (curveSlopePct !== null) {
           updates.backwardation = Math.round(Math.max(-30, Math.min(30, curveSlopePct)));
@@ -695,7 +787,7 @@ export default function OilPriceCalc() {
       });
 
       setLastFetched({
-        wti, ovx, vix,
+        wti, brent, spread, ovx, vix,
         curveSlopePct: curveSlopePct !== null ? parseFloat(curveSlopePct.toFixed(1)) : null,
         curveLabel,
         ts: new Date().toLocaleTimeString(),
@@ -858,23 +950,25 @@ export default function OilPriceCalc() {
                           <div style={{ color: C.t2, fontSize: 10, fontFamily: "'JetBrains Mono',monospace", lineHeight: 1.6 }}>
                             <span>WTI <span style={{ color: C.amber }}>${lastFetched.wti}</span></span>
                             {' · '}
-                            <span>OVX <span style={{ color: C.orange }}>{lastFetched.ovx}%</span></span>
+                            <span>Brent <span style={{ color: C.blue }}>${lastFetched.brent}</span></span>
                             {' · '}
-                            <span>VIX <span style={{ color: C.blue }}>{lastFetched.vix}</span></span>
+                            <span>OVX <span style={{ color: C.orange }}>{lastFetched.ovx}%</span></span>
                           </div>
-                          {lastFetched.curveSlopePct !== null && (
-                            <div style={{ color: C.t4, fontSize: 9.5, fontFamily: "'JetBrains Mono',monospace", marginTop: 1 }}>
-                              Curve vs {lastFetched.curveLabel}:{' '}
-                              <span style={{ color: lastFetched.curveSlopePct >= 0 ? C.green : C.red }}>
+                          <div style={{ color: C.t4, fontSize: 9.5, fontFamily: "'JetBrains Mono',monospace", marginTop: 1 }}>
+                            Spread (WTI−Brent): <span style={{
+                              color: lastFetched.spread < -5 ? C.red : lastFetched.spread < -2 ? C.amber : C.green
+                            }}>{lastFetched.spread > 0 ? '+' : ''}{lastFetched.spread?.toFixed(2)}</span>
+                            {' · '}VIX <span style={{ color: C.blue }}>{lastFetched.vix}</span>
+                            {lastFetched.curveSlopePct !== null && (
+                              <span> · Curve <span style={{ color: lastFetched.curveSlopePct >= 0 ? C.green : C.red }}>
                                 {lastFetched.curveSlopePct >= 0 ? '+' : ''}{lastFetched.curveSlopePct}%/yr
-                                {' '}{lastFetched.curveSlopePct >= 0 ? '(backwardation)' : '(contango)'}
-                              </span>
-                            </div>
-                          )}
+                              </span></span>
+                            )}
+                          </div>
                           <div style={{ color: C.t4, fontSize: 9, marginTop: 1 }}>as of {lastFetched.ts}</div>
                         </>
                       ) : (
-                        <div style={{ color: C.t4, fontSize: 10 }}>CL=F · ^OVX · ^VIX · futures curve</div>
+                        <div style={{ color: C.t4, fontSize: 10 }}>CL=F · BZ=F · ^OVX · ^VIX · futures curve</div>
                       )}
                     </div>
                   </div>
@@ -1112,7 +1206,11 @@ export default function OilPriceCalc() {
                     <div style={{ color: C.t4, fontSize: 10, marginBottom: 4, fontStyle: 'italic' }}>{sc.date}</div>
                     <div style={{ color: C.t3, fontSize: 10.5, lineHeight: 1.5 }}>{sc.desc}</div>
                     {appliedScenario === sc.id && (
-                      <div style={{ color: C.amber, fontSize: 10, marginTop: 6, fontWeight: 600 }}>✓ Active</div>
+                      <div style={{ color: C.amber, fontSize: 10, marginTop: 6, fontWeight: 600,
+                        display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span>✓ Active</span>
+                        <span style={{ color: C.t4, fontWeight: 400, fontSize: 9.5 }}>click to deactivate</span>
+                      </div>
                     )}
                   </div>
                 ))}
